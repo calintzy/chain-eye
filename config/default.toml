@@ -1,0 +1,10 @@
+[rpc]
+ws_url = "wss://eth.drpc.org"
+fallback_ws_url = "wss://ethereum-rpc.publicnode.com"
+max_reconnect_attempts = 10
+reconnect_base_delay_ms = 1000
+
+[ui]
+max_transactions = 1000
+tick_rate_ms = 16
+address_display_len = 4

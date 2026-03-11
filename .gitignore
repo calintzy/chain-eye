@@ -1,0 +1,23 @@
+# Build
+/target/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# bkit state
+.bkit/
+
+# Claude/OMC state
+.claude/
+.omc/
+
+# Environment
+.env
