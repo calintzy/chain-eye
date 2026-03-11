@@ -1,8 +1,31 @@
-use anyhow::Result;
-use serde::Deserialize;
+use std::collections::HashMap;
 use std::path::PathBuf;
 
-/// RPC 설정
+use anyhow::Result;
+use serde::Deserialize;
+
+use crate::chain::chains::ChainId;
+
+/// 체인별 설정
+#[derive(Debug, Clone, Deserialize)]
+pub struct ChainConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    pub ws_url: Option<String>,
+    pub fallback_ws_url: Option<String>,
+}
+
+impl Default for ChainConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            ws_url: None,
+            fallback_ws_url: None,
+        }
+    }
+}
+
+/// RPC 전역 설정 (재연결 파라미터)
 #[derive(Debug, Clone, Deserialize)]
 pub struct RpcConfig {
     #[serde(default = "default_ws_url")]
@@ -25,16 +48,30 @@ pub struct UiConfig {
     pub address_display_len: usize,
 }
 
+/// 지갑 추적 설정
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct WatchConfig {
+    #[serde(default)]
+    pub addresses: Vec<String>,
+}
+
 /// 전체 설정
 #[derive(Debug, Clone, Deserialize)]
 pub struct AppConfig {
     #[serde(default)]
+    pub chains: HashMap<ChainId, ChainConfig>,
+    #[serde(default)]
     pub rpc: RpcConfig,
     #[serde(default)]
     pub ui: UiConfig,
+    #[serde(default)]
+    pub watch: WatchConfig,
 }
 
 // 기본값 함수들
+fn default_true() -> bool {
+    true
+}
 fn default_ws_url() -> String {
     "wss://eth.drpc.org".to_string()
 }
@@ -78,26 +115,23 @@ impl Default for UiConfig {
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
+            chains: HashMap::new(),
             rpc: RpcConfig::default(),
             ui: UiConfig::default(),
+            watch: WatchConfig::default(),
         }
     }
 }
 
 impl AppConfig {
-    /// 설정 파일 로딩 (사용자 설정 > 기본값)
+    /// 설정 파일 로딩
     pub fn load(config_path: Option<&PathBuf>) -> Result<Self> {
-        // 1. 기본 설정
         let mut config = AppConfig::default();
 
-        // 2. 사용자 설정 파일 경로 결정
         let user_config_path = config_path
             .cloned()
-            .or_else(|| {
-                dirs::home_dir().map(|h| h.join(".chain-eye").join("config.toml"))
-            });
+            .or_else(|| dirs::home_dir().map(|h| h.join(".chain-eye").join("config.toml")));
 
-        // 3. 사용자 설정 파일이 존재하면 로딩 후 병합
         if let Some(path) = user_config_path {
             if path.exists() {
                 let content = std::fs::read_to_string(&path)?;
@@ -109,19 +143,24 @@ impl AppConfig {
         Ok(config)
     }
 
-    /// 사용자 설정을 기본 설정에 병합
+    /// 사용자 설정 병합
     fn merge(&mut self, other: AppConfig) {
-        // RPC: ws_url이 기본값이 아니면 오버라이드
         if other.rpc.ws_url != default_ws_url() {
             self.rpc.ws_url = other.rpc.ws_url;
         }
         if other.rpc.fallback_ws_url.is_some() {
             self.rpc.fallback_ws_url = other.rpc.fallback_ws_url;
         }
-
-        // UI 설정 오버라이드
         if other.ui.max_transactions != default_max_tx() {
             self.ui.max_transactions = other.ui.max_transactions;
+        }
+        // 체인 설정 병합
+        for (chain_id, chain_config) in other.chains {
+            self.chains.insert(chain_id, chain_config);
+        }
+        // Watch 설정 병합
+        if !other.watch.addresses.is_empty() {
+            self.watch = other.watch;
         }
     }
 
@@ -129,6 +168,38 @@ impl AppConfig {
     pub fn apply_cli_overrides(&mut self, rpc_url: Option<&str>) {
         if let Some(url) = rpc_url {
             self.rpc.ws_url = url.to_string();
+        }
+    }
+
+    /// 활성 체인 목록 반환 (CLI --chain 또는 config에서)
+    pub fn get_active_chains(&self, cli_chains: &[ChainId]) -> Vec<(ChainId, ChainConfig)> {
+        if cli_chains.is_empty() || (cli_chains.len() == 1 && cli_chains[0] == ChainId::Ethereum) {
+            // 기본: config에 설정된 체인 또는 Ethereum만
+            if self.chains.is_empty() {
+                vec![(
+                    ChainId::Ethereum,
+                    ChainConfig {
+                        enabled: true,
+                        ws_url: Some(self.rpc.ws_url.clone()),
+                        fallback_ws_url: self.rpc.fallback_ws_url.clone(),
+                    },
+                )]
+            } else {
+                self.chains
+                    .iter()
+                    .filter(|(_, c)| c.enabled)
+                    .map(|(id, c)| (*id, c.clone()))
+                    .collect()
+            }
+        } else {
+            // CLI에서 지정된 체인들
+            cli_chains
+                .iter()
+                .map(|id| {
+                    let config = self.chains.get(id).cloned().unwrap_or_default();
+                    (*id, config)
+                })
+                .collect()
         }
     }
 }

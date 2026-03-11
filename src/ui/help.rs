@@ -5,8 +5,8 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 /// 도움말 바 렌더링 (기본 모드)
-pub fn render(frame: &mut Frame, area: Rect, show_detail: bool) {
-    let keys = if show_detail {
+pub fn render(frame: &mut Frame, area: Rect, show_detail: bool, has_tabs: bool) {
+    let mut keys = if show_detail {
         vec![
             key_span("[Esc]", "Back"),
             key_span("[↑↓/jk]", "Select"),
@@ -22,6 +22,10 @@ pub fn render(frame: &mut Frame, area: Rect, show_detail: bool) {
             key_span("[q]", "Quit"),
         ]
     };
+
+    if has_tabs {
+        keys.insert(0, key_span("[Tab/1-7]", "Chain"));
+    }
 
     let mut spans: Vec<Span> = vec![Span::raw(" ")];
     for (i, (key, desc)) in keys.into_iter().enumerate() {

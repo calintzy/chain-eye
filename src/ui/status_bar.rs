@@ -4,6 +4,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
+use crate::chain::chains::ChainId;
 use crate::filter::TxFilter;
 
 /// 상태바 렌더링
@@ -13,6 +14,7 @@ pub fn render(
     tx_total: u64,
     tx_displayed: usize,
     filter: &TxFilter,
+    chain_id: ChainId,
 ) {
     let filter_text = if filter.active && filter.has_conditions() {
         let mut parts = Vec::new();
@@ -30,7 +32,13 @@ pub fn render(
         "Filter: OFF".to_string()
     };
 
+    let chain_name = chain_id.display_name();
+
     let line = Line::from(vec![
+        Span::styled(
+            format!(" [{}]", chain_name),
+            Style::default().fg(chain_id.color()),
+        ),
         Span::styled(
             format!(" TX: {} received", tx_total),
             Style::default().fg(Color::White),

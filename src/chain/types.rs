@@ -1,5 +1,8 @@
 use std::fmt;
 
+use crate::chain::chains::ChainId;
+use crate::token::decode::TokenTransfer;
+
 /// 트랜잭션 유형
 #[derive(Debug, Clone, PartialEq)]
 pub enum TxType {
@@ -35,6 +38,8 @@ pub struct TxInfo {
     pub timestamp: u64,
     pub input_size: usize,
     pub tx_type: TxType,
+    pub chain_id: ChainId,
+    pub token_transfer: Option<TokenTransfer>,
 }
 
 /// 블록 정보

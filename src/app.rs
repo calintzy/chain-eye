@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::time::Duration;
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
@@ -6,17 +6,52 @@ use ratatui::widgets::TableState;
 use ratatui::Frame;
 use tokio::sync::mpsc;
 
+use crate::chain::chains::ChainId;
 use crate::chain::types::{BlockInfo, TxInfo};
 use crate::config::AppConfig;
 use crate::event::{ChainEvent, ConnectionState};
 use crate::filter::TxFilter;
 use crate::ui;
 
-pub struct App {
-    // 데이터
+/// 체인별 상태
+pub struct ChainState {
     pub transactions: VecDeque<TxInfo>,
     pub current_block: Option<BlockInfo>,
     pub connection_state: ConnectionState,
+    pub tx_total_count: u64,
+}
+
+impl ChainState {
+    fn new() -> Self {
+        Self {
+            transactions: VecDeque::new(),
+            current_block: None,
+            connection_state: ConnectionState::Disconnected {
+                reason: "연결 중...".to_string(),
+            },
+            tx_total_count: 0,
+        }
+    }
+}
+
+/// 지갑 추적 정보
+pub struct WatchInfo {
+    pub address: String,
+    pub ens_name: Option<String>,
+    pub balance_eth: Option<f64>,
+    pub last_activity: Option<u64>,
+    pub tx_count: u64,
+}
+
+pub struct App {
+    // 멀티체인 상태
+    pub chain_states: HashMap<ChainId, ChainState>,
+    pub active_chains: Vec<ChainId>,
+    pub active_chain_idx: usize,
+
+    // 지갑 추적
+    pub watch_info: Option<WatchInfo>,
+    pub watch_mode: bool,
 
     // UI 상태
     pub selected_index: usize,
@@ -34,17 +69,35 @@ pub struct App {
 
     // 상태
     pub running: bool,
-    pub tx_total_count: u64,
 }
 
 impl App {
-    pub fn new(config: AppConfig, filter: TxFilter, chain_rx: mpsc::Receiver<ChainEvent>) -> Self {
+    pub fn new(
+        config: AppConfig,
+        filter: TxFilter,
+        active_chains: Vec<ChainId>,
+        watch_address: Option<String>,
+        chain_rx: mpsc::Receiver<ChainEvent>,
+    ) -> Self {
+        let mut chain_states = HashMap::new();
+        for &chain_id in &active_chains {
+            chain_states.insert(chain_id, ChainState::new());
+        }
+
+        let watch_info = watch_address.map(|addr| WatchInfo {
+            address: addr.to_lowercase(),
+            ens_name: None,
+            balance_eth: None,
+            last_activity: None,
+            tx_count: 0,
+        });
+
         Self {
-            transactions: VecDeque::new(),
-            current_block: None,
-            connection_state: ConnectionState::Disconnected {
-                reason: "Starting...".to_string(),
-            },
+            chain_states,
+            active_chains,
+            active_chain_idx: 0,
+            watch_info,
+            watch_mode: false,
             selected_index: 0,
             show_detail: false,
             table_state: TableState::default(),
@@ -52,8 +105,17 @@ impl App {
             config,
             chain_rx,
             running: true,
-            tx_total_count: 0,
         }
+    }
+
+    /// 현재 활성 체인 ID
+    pub fn active_chain(&self) -> ChainId {
+        self.active_chains[self.active_chain_idx]
+    }
+
+    /// 현재 활성 체인의 상태
+    pub fn active_state(&self) -> &ChainState {
+        &self.chain_states[&self.active_chain()]
     }
 
     /// 메인 이벤트 루프
@@ -61,10 +123,8 @@ impl App {
         let mut terminal = ratatui::init();
 
         while self.running {
-            // 1. UI 렌더링
             terminal.draw(|frame| self.render(frame))?;
 
-            // 2. 키보드 이벤트 (non-blocking poll)
             if event::poll(Duration::from_millis(self.config.ui.tick_rate_ms))? {
                 if let Event::Key(key) = event::read()? {
                     if key.kind == KeyEventKind::Press {
@@ -73,7 +133,6 @@ impl App {
                 }
             }
 
-            // 3. 체인 이벤트 수신 (non-blocking)
             while let Ok(chain_event) = self.chain_rx.try_recv() {
                 self.handle_chain_event(chain_event);
             }
@@ -85,50 +144,104 @@ impl App {
 
     /// UI 렌더링
     fn render(&mut self, frame: &mut Frame) {
-        let layout = ui::layout::build_layout(frame.area(), self.show_detail);
+        let has_tabs = self.active_chains.len() > 1;
+        let layout = ui::layout::build_layout(frame.area(), self.show_detail, has_tabs);
+
+        // 체인 탭 (멀티체인일 때만)
+        if let Some(tab_area) = layout.chain_tabs {
+            ui::tabs::render(
+                frame,
+                tab_area,
+                &self.active_chains,
+                self.active_chain_idx,
+                &self.chain_states,
+            );
+        }
+
+        let chain_id = self.active_chain();
+        let state = &self.chain_states[&chain_id];
 
         // Header
         ui::header::render(
             frame,
             layout.header,
-            &self.current_block,
-            &self.connection_state,
+            &state.current_block,
+            &state.connection_state,
+            chain_id,
         );
 
         // Transaction List
-        let tx_slice: Vec<TxInfo> = self.transactions.iter().cloned().collect();
+        let tx_slice: Vec<TxInfo> = state.transactions.iter().cloned().collect();
+        let selected_tx = state.transactions.get(self.selected_index).cloned();
         ui::tx_list::render(
             frame,
             layout.tx_list,
             &tx_slice,
             self.selected_index,
             &mut self.table_state,
+            chain_id,
         );
 
-        // Detail Panel (상세 모드일 때만)
+        // Detail Panel
         if let Some(detail_area) = layout.tx_detail {
-            let selected_tx = self.transactions.get(self.selected_index);
-            ui::tx_detail::render(frame, detail_area, selected_tx);
+            ui::tx_detail::render(frame, detail_area, selected_tx.as_ref());
         }
 
         // Status Bar
+        let tx_total = self.chain_states[&chain_id].tx_total_count;
+        let tx_len = self.chain_states[&chain_id].transactions.len();
         ui::status_bar::render(
             frame,
             layout.status_bar,
-            self.tx_total_count,
-            self.transactions.len(),
+            tx_total,
+            tx_len,
             &self.filter,
+            chain_id,
         );
 
         // Help Bar
-        ui::help::render(frame, layout.help_bar, self.show_detail);
+        ui::help::render(frame, layout.help_bar, self.show_detail, has_tabs);
     }
 
     /// 키보드 입력 처리
     fn handle_key(&mut self, key: KeyCode) {
         match key {
-            // 종료
             KeyCode::Char('q') => self.running = false,
+
+            // 체인 탭 전환
+            KeyCode::Tab => {
+                if self.active_chains.len() > 1 {
+                    self.active_chain_idx =
+                        (self.active_chain_idx + 1) % self.active_chains.len();
+                    self.selected_index = 0;
+                }
+            }
+            KeyCode::BackTab => {
+                if self.active_chains.len() > 1 {
+                    if self.active_chain_idx == 0 {
+                        self.active_chain_idx = self.active_chains.len() - 1;
+                    } else {
+                        self.active_chain_idx -= 1;
+                    }
+                    self.selected_index = 0;
+                }
+            }
+
+            // 체인 직접 선택 (1-7)
+            KeyCode::Char(c @ '1'..='7') => {
+                let idx = (c as usize) - ('1' as usize);
+                if idx < self.active_chains.len() {
+                    self.active_chain_idx = idx;
+                    self.selected_index = 0;
+                }
+            }
+
+            // Watch 모드 토글
+            KeyCode::Char('w') => {
+                if self.watch_info.is_some() {
+                    self.watch_mode = !self.watch_mode;
+                }
+            }
 
             // 위로 이동
             KeyCode::Up | KeyCode::Char('k') => {
@@ -139,21 +252,19 @@ impl App {
 
             // 아래로 이동
             KeyCode::Down | KeyCode::Char('j') => {
-                if !self.transactions.is_empty()
-                    && self.selected_index < self.transactions.len() - 1
-                {
+                let txs = &self.active_state().transactions;
+                if !txs.is_empty() && self.selected_index < txs.len() - 1 {
                     self.selected_index += 1;
                 }
             }
 
-            // 상세 보기 열기
+            // 상세 보기
             KeyCode::Enter => {
-                if !self.transactions.is_empty() {
+                if !self.active_state().transactions.is_empty() {
                     self.show_detail = true;
                 }
             }
 
-            // 상세 보기 닫기
             KeyCode::Esc => {
                 self.show_detail = false;
             }
@@ -170,8 +281,9 @@ impl App {
 
             // 맨 아래로
             KeyCode::End | KeyCode::Char('G') => {
-                if !self.transactions.is_empty() {
-                    self.selected_index = self.transactions.len() - 1;
+                let txs = &self.active_state().transactions;
+                if !txs.is_empty() {
+                    self.selected_index = txs.len() - 1;
                 }
             }
 
@@ -182,34 +294,54 @@ impl App {
     /// 체인 이벤트 처리
     fn handle_chain_event(&mut self, event: ChainEvent) {
         match event {
-            ChainEvent::NewBlock(block_info) => {
-                self.current_block = Some(block_info);
+            ChainEvent::NewBlock(chain_id, block_info) => {
+                if let Some(state) = self.chain_states.get_mut(&chain_id) {
+                    state.current_block = Some(block_info);
+                }
             }
 
-            ChainEvent::NewTransactions(txs) => {
+            ChainEvent::NewTransactions(chain_id, txs) => {
                 let max = self.config.ui.max_transactions;
-                self.tx_total_count += txs.len() as u64;
+                if let Some(state) = self.chain_states.get_mut(&chain_id) {
+                    state.tx_total_count += txs.len() as u64;
 
-                // 새 트랜잭션을 앞에 추가 (최신이 위)
-                for tx in txs.into_iter().rev() {
-                    self.transactions.push_front(tx);
-                }
+                    for tx in txs.into_iter().rev() {
+                        // Watch 모드: 추적 주소와 관련된 TX 카운트
+                        if let Some(ref mut watch) = self.watch_info {
+                            let addr = &watch.address;
+                            if tx.from_full.to_lowercase() == *addr
+                                || tx
+                                    .to_full
+                                    .as_ref()
+                                    .map(|t| t.to_lowercase() == *addr)
+                                    .unwrap_or(false)
+                            {
+                                watch.tx_count += 1;
+                                watch.last_activity = Some(tx.timestamp);
+                            }
+                        }
+                        state.transactions.push_front(tx);
+                    }
 
-                // 최대 수 초과 시 오래된 것 제거
-                while self.transactions.len() > max {
-                    self.transactions.pop_back();
-                }
+                    while state.transactions.len() > max {
+                        state.transactions.pop_back();
+                    }
 
-                // 선택 인덱스 범위 보정
-                if !self.transactions.is_empty()
-                    && self.selected_index >= self.transactions.len()
-                {
-                    self.selected_index = self.transactions.len() - 1;
+                    // 현재 활성 체인이면 선택 인덱스 보정
+                    let active = self.active_chains[self.active_chain_idx];
+                    if chain_id == active
+                        && !state.transactions.is_empty()
+                        && self.selected_index >= state.transactions.len()
+                    {
+                        self.selected_index = state.transactions.len() - 1;
+                    }
                 }
             }
 
-            ChainEvent::ConnectionStatus(state) => {
-                self.connection_state = state;
+            ChainEvent::ConnectionStatus(chain_id, conn_state) => {
+                if let Some(state) = self.chain_states.get_mut(&chain_id) {
+                    state.connection_state = conn_state;
+                }
             }
         }
     }

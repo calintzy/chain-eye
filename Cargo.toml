@@ -1,6 +1,6 @@
 [package]
 name = "chain-eye"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Real-time EVM transaction monitoring TUI"
 license = "MIT"
@@ -14,7 +14,7 @@ crossterm = "0.28"
 tokio = { version = "1", features = ["full"] }
 
 # EVM
-alloy = { version = "1.5", features = ["provider-ws", "rpc-types"] }
+alloy = { version = "1.5", features = ["provider-ws", "rpc-types", "sol-types"] }
 futures-util = "0.3"
 
 # Serialization
@@ -32,3 +32,4 @@ anyhow = "1"
 # Utilities
 chrono = "0.4"
 dirs = "6"
+hex = "0.4"

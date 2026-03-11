@@ -4,6 +4,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 
+use crate::chain::chains::ChainId;
 use crate::chain::types::BlockInfo;
 use crate::event::ConnectionState;
 
@@ -13,62 +14,51 @@ pub fn render(
     area: Rect,
     current_block: &Option<BlockInfo>,
     connection_state: &ConnectionState,
+    chain_id: ChainId,
 ) {
     let block_text = match current_block {
         Some(info) => format!("Block: {}", info.number),
         None => "Block: --".to_string(),
     };
 
+    let gas_text = current_block
+        .as_ref()
+        .and_then(|info| info.base_fee_gwei.map(|fee| format!("Gas: {:.1} Gwei", fee)))
+        .unwrap_or_default();
+
+    let chain_name = chain_id.display_name();
+    let chain_color = chain_id.color();
+
     let (conn_text, conn_color) = match connection_state {
-        ConnectionState::Connected => ("Connected", Color::Green),
+        ConnectionState::Connected => ("Connected".to_string(), Color::Green),
         ConnectionState::Reconnecting { attempt } => {
-            // 직접 문자열 반환 대신 static text 사용
-            return render_reconnecting(frame, area, &block_text, *attempt);
+            (format!("Reconnecting ({})", attempt), Color::Yellow)
         }
-        ConnectionState::Disconnected { .. } => ("Disconnected", Color::Red),
+        ConnectionState::Disconnected { .. } => ("Disconnected".to_string(), Color::Red),
     };
 
-    let line = Line::from(vec![
+    let mut spans = vec![
         Span::styled(
-            " Chain-Eye v0.1 ",
+            " Chain-Eye v0.2 ",
             Style::default()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw("  "),
-        Span::styled("ETH Mainnet", Style::default().fg(Color::White)),
+        Span::styled(chain_name, Style::default().fg(chain_color).add_modifier(Modifier::BOLD)),
         Span::raw("    "),
         Span::styled(&block_text, Style::default().fg(Color::Yellow)),
-        Span::raw("    "),
-        Span::styled(conn_text, Style::default().fg(conn_color)),
-    ]);
+    ];
 
-    let widget = Paragraph::new(line).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::DarkGray)),
-    );
+    if !gas_text.is_empty() {
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(gas_text, Style::default().fg(Color::Magenta)));
+    }
 
-    frame.render_widget(widget, area);
-}
+    spans.push(Span::raw("    "));
+    spans.push(Span::styled(conn_text, Style::default().fg(conn_color)));
 
-fn render_reconnecting(frame: &mut Frame, area: Rect, block_text: &str, attempt: u32) {
-    let conn_text = format!("Reconnecting ({})", attempt);
-
-    let line = Line::from(vec![
-        Span::styled(
-            " Chain-Eye v0.1 ",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw("  "),
-        Span::styled("ETH Mainnet", Style::default().fg(Color::White)),
-        Span::raw("    "),
-        Span::styled(block_text, Style::default().fg(Color::Yellow)),
-        Span::raw("    "),
-        Span::styled(conn_text, Style::default().fg(Color::Yellow)),
-    ]);
+    let line = Line::from(spans);
 
     let widget = Paragraph::new(line).block(
         Block::default()

@@ -18,4 +18,14 @@ pub enum ChainEyeError {
 
     #[error("TUI 렌더링 오류: {0}")]
     UiRender(String),
+
+    // v0.2 추가
+    #[error("ENS 해석 실패: {0}")]
+    EnsResolution(String),
+
+    #[error("지원하지 않는 체인: {0}")]
+    UnsupportedChain(String),
+
+    #[error("토큰 디코딩 실패: {0}")]
+    TokenDecode(String),
 }
